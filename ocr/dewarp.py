@@ -725,7 +725,7 @@ def dewarp_image(img, window_size=55, C=6):
     cinfo_list = get_contours(mask)
     # spans
     spans = assemble_spans(small, pagemask, cinfo_list)
-    if len(spans) < 3: return None
+    if len(spans) < 3: raise Exception('Not enough spans to dewarp.')
     span_points = sample_spans(small.shape, spans) # [P,1,2]
     corners, ycoords, xcoords = keypoints_from_samples(small, pagemask, page_outline, span_points) # corners of min/max h/w samples
     # optimize
