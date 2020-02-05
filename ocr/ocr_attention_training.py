@@ -2,9 +2,9 @@
 
 __all__ = ['PAD', 'attention_config', 'allowed_chars', 'MultiCategoryProcessor', 'MultiCategory', 'one_hot_text',
            'MultiCategoryList', 'str2lines', 'MyImageList', 'gaussian_blur', 'resize_tfm', 'rand_resize',
-           'resize_one_img', 'train_transforms', 'valid_transforms', 'im2seq_data_collate', 'create_data',
-           'conv_output', 'MultiHeadAttention', 'feed_forward', 'EncoderBlock', 'DecoderBlock', 'get_output_mask',
-           'PositionalEncoding', 'TransformerEmbedding', 'compose', 'TransformerEncoder', 'ATTMODEL', 'loss_func',
+           'resize_one_img', 'train_transforms', 'valid_transforms', 'create_data', 'conv_output', 'MultiHeadAttention',
+           'feed_forward', 'EncoderBlock', 'DecoderBlock', 'get_output_mask', 'PositionalEncoding',
+           'TransformerEmbedding', 'compose', 'TransformerEncoder', 'MultiCnnLayer', 'CNN', 'ATTMODEL', 'loss_func',
            'wer', 'word_error', 'char_error', 'decode_ctc', 'CER', 'WER']
 
 # Cell
@@ -179,41 +179,13 @@ train_transforms = [
     contrast(scale=(0.7,1.3), p=0.4),
     gaussian_blur(size=(1, 7), p=0.2),
 #     squish(scale=(0.85,1.15), p=0.3),
-    cutout(n_holes=(0,6), length=(1,10)), # black rect
+#     cutout(n_holes=(0,6), length=(1,10)), # black rect
 #     tilt(direction=(0,3), magnitude=(-0.2,0.2), p=0.3)
 ]
 
 valid_transforms = [
     rand_resize(pad=(0,0), p=1.0) # (no padding, but need to resize)
 ]
-
-# Cell
-def im2seq_data_collate(batch:ItemsList, pad_idx:int=0)->Tensor:
-    if isinstance(batch[0][1], int): return data_collate(batch)
-    "Convert `batch` items to tensor data."
-    data = to_data(batch) # list of (image, text) pairs
-    # image: [3,48,w], text: [n,c], where n's and w's are different
-    max_w = max([image.shape[2] for image, text in data])
-    max_h = max([image.shape[1] for image, text in data])
-    max_n = max([text.shape[0] for image, text in data])
-#     _, num_classes = data[0][1].shape
-
-    images = torch.zeros(len(batch), 3, max_h, max_w)
-#     texts = torch.zeros(len(batch), max_n, num_classes)
-    texts = []
-    nn_out_seq_len, texts_len = [], []
-    for i, (image, text) in enumerate(data):
-        c,h,w = image.shape
-        images[i, : , : , :w ] = image
-        images[i, : , : , w: ] = image[:,:,w-1].unsqueeze(2).expand(c,h,max_w-w)
-        nn_out_seq_len.append( image_width2seq_len(w) )
-        n = text.size(0)
-        texts.append( tensor(text) )
-#         texts[i, :n , : ] = tensor(text)
-#         texts[i, n: , -1 ] = 1
-        texts_len.append(n)
-#     texts = torch.cat(texts, axis=0)
-    return images, (texts, tensor(nn_out_seq_len).type(torch.int), tensor(texts_len).type(torch.int))
 
 # Cell
 def create_data(df, bs=32):
@@ -225,6 +197,8 @@ def create_data(df, bs=32):
         .databunch(bs=bs, collate_fn=im2seq_data_collate)
         .normalize(imagenet_stats)
     )
+    data.train_dl.numworkers=0
+    data.valid_dl.numworkers=0
 
 #     def add_beggining_and_end(b):
 #         x,y = b
@@ -248,18 +222,15 @@ def conv_output(w, ss, ps=None, ks=3):
 _apply_layer = lambda args: args[1](args[0]) # args[0]: x, args[1]: layer => layer(x)
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, n_heads, d_model, d_head=None, p=0., bias=True, scale=True):
+    def __init__(self, n_heads, d_model, d_head=None, p=0., bias=True, scale=True, shared_qk=False):
         super().__init__()
         d_head = ifnone(d_head, d_model//n_heads)
         self.n_heads,self.d_head,self.scale = n_heads,d_head,scale
-        self.q_wgt,self.k_wgt,self.v_wgt = [nn.Linear(d_model, n_heads*d_head, bias=bias) for o in range(3)]
+        self.q_wgt, self.v_wgt = [nn.Linear(d_model, n_heads*d_head, bias=bias) for o in range(2)]
+        self.k_wgt = self.q_wgt if shared_qk else nn.Linear(d_model, n_heads*d_head, bias=bias)
         self.out = nn.Linear(n_heads * d_head, d_model, bias=bias)
         self.drop_att,self.drop_res = nn.Dropout(p),nn.Dropout(p)
         self.ln = nn.LayerNorm(d_model)
-
-#     def forward(self, q, kv, mask=None):
-#         ''' [b,s_d,512], [b,s_e,512], [1,1,s_d,s_e] -> [b,s_d,512] '''
-#         return self.ln(q + self.drop_res(self.out(self._apply_attention(q, kv, mask))))
 
     def forward(self, q, kv, mask=None):
         ''' [b,s_d,512], [b,s_e,512], [1,1,s_d,s_e] -> [b,s_d,512] '''
@@ -341,8 +312,8 @@ class TransformerEmbedding(nn.Module):
         ''' [] -> [] '''
         pos = torch.arange(0, inp.size(1), device=inp.device).float()
         if self.embed is not None: inp = self.embed(inp)
-        return self.drop(inp + self.alpha * self.pos_enc(pos))
-#         return self.drop(self.embed(inp) * math.sqrt(self.emb_sz) + self.pos_enc(pos))
+#         return self.drop(inp + self.alpha * self.pos_enc(pos))
+        return self.drop(inp * math.sqrt(self.emb_sz) + self.pos_enc(pos))
 
 # Cell
 def compose(funcs):
@@ -375,45 +346,64 @@ class TransformerEncoder(Module):
         return enc
 
 # Cell
-def _create_cnn(kernels, strides, channels, padding):
-    layers = []
-    for i,o,k,s,p in zip([3] + channels[:-1], channels, kernels, strides, padding):
-        layers.append( conv_layer(ni=i, nf=o, ks=k, stride=s, padding=p) )
-    return nn.Sequential(*layers)
+class MultiCnnLayer(nn.Module):
+    def __init__(self, ni, nf, ks, stride, padding):
+        super().__init__()
+        self.conv = conv_layer(ni=ni, nf=nf, ks=ks, stride=stride, padding=padding)
+        self.pool = nn.MaxPool2d(stride)
+        self.conv2 = conv_layer(ni=ni, nf=nf, ks=1, stride=1, padding=padding)
+#         self.relu = nn.ReLU(inplace=True)
+#         self.bn =  nn.BatchNorm2d(nf)
+
+    def forward(self, x):
+        return self.conv2(self.pool(x)) + self.conv(x)
+#         return self.bn(self.relu(x + self.conv(x)))
+
+class CNN(nn.Module):
+    def __init__(self, d_model, cnn_layers, kernels, strides, channels, padding):
+        super().__init__()
+        layers = []
+        for layer,i,o,k,s,p in zip(cnn_layers, [3] + channels[:-1], channels, kernels, strides, padding):
+            layers.append( layer(ni=i, nf=o, ks=k, stride=s, padding=p) )
+        self.cnn = nn.Sequential(*layers)
+        b,c,h,w = self.cnn(torch.zeros(1,3,48,128)).shape
+        print('CNN output = h:{} c:{}'.format(h,c))
+#         self.out = nn.Linear(channels[-1]*h, d_model)
+
+    def forward(self, x):
+        x = self.cnn(x).permute(0,3,1,2)
+        b,w,c,h = x.shape
+        return x.view(b,w,-1) # [b,c,h,w]
+#         return self.out(x.view(b,w,-1)) # [b,c,h,w]
 
 # Cell
 class ATTMODEL(nn.Module):
 
-    def __init__(self, nclass=10, nc=3, n_layers=6, use_rnn=False, rnn_hidden=256, bidirectional=False):
+    def __init__(self, nclass=10, nc=3, n_layers=6, d_model=512, d_ff=1024, use_rnn=False, rnn_hidden=256, bidirectional=False):
         super().__init__()
         self.nclass = nclass
-        kernels = [3, 3, 3, 3, 3, 3, 3]
         strides = [2, 1, (2,1), 1, (2,1), (2,1), 1]
         channels = [64, 128, 256, 256, 512, 512, 512]
-        padding = [None] * 6 + [0] # None - out size doesnt change
-
+        cnn_layers = [conv_layer] * len(strides)
+        kernels = [3] * len(strides)
+        padding = [None] * (len(strides)-1) + [0] # None - out size doesnt change
         self.kernels, self.strides, self.channels, self.padding = kernels, strides, channels, padding
 
-        self.cnn = _create_cnn(kernels, strides, channels, padding)
+        self.cnn = CNN(d_model, cnn_layers, kernels, strides, channels, padding)
 
-        out_channels = channels[-1]
-        self.transformer = TransformerEncoder(n_layers=n_layers, n_heads=8, d_model=out_channels, d_inner=1024)
+        self.transformer = TransformerEncoder(n_layers=n_layers, n_heads=8, d_model=d_model, d_inner=d_ff)
 
         self.use_rnn = use_rnn
         if self.use_rnn:
-            self.rnn = nn.LSTM(out_channels, rnn_hidden, bidirectional=bidirectional)
+            self.rnn = nn.LSTM(d_model, rnn_hidden, bidirectional=bidirectional)
             mult = 1 if not bidirectional else 2
-            out_channels = rnn_hidden * mult
+            d_model = rnn_hidden * mult
 
-        self.out = nn.Linear(out_channels, nclass)
+        self.out = nn.Linear(d_model, nclass)
 
     def forward(self, x):
         ''' [b,c,h,w], [b,s_d] '''
-        x = self.cnn(x) # [b,512,1,w/4-2]
-        b, c, h, w = x.size()
-        assert h == 1, "the height of conv must be 1"
-        x_orig = x.squeeze(2).permute(0, 2, 1) # [b,w,512] (w == s)
-        x = x_orig
+        x = self.cnn(x) # [b,w,512]
         x = self.transformer(x)
         if self.use_rnn: x, _ = self.rnn(x)
         return self.out(x)
@@ -427,9 +417,9 @@ def loss_func(y_pred, y_true, y_pred_len, y_true_len):
     b, s_e, c = y_pred.shape
     y_true = torch.cat(y_true, axis=0) # [b*s_d]
     y_pred = y_pred.log_softmax(axis=2).permute(1,0,2) # [ s_e, b, c ]
-    torch.backends.cudnn.enabled = False
+#     torch.backends.cudnn.enabled = False
     loss = ctc_loss(y_pred, y_true, y_pred_len, y_true_len)
-    torch.backends.cudnn.enabled = True
+#     torch.backends.cudnn.enabled = True
     return loss
 
 # Cell

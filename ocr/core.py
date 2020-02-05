@@ -28,8 +28,8 @@ def load_inference(name, dir_path='../models/'):
 # Cell
 import matplotlib.pyplot as plt
 
-def plot(im):
-    ax = plt.figure()
+def plot(im, figsize=None): # im - np.arr(h,w,3), figsize - tuple(2)
+    ax = plt.figure(figsize=figsize)
     if len(im.squeeze().shape) == 2: plt.imshow(im, cmap='gray')
     else: plt.imshow(im)
     return plt.show()

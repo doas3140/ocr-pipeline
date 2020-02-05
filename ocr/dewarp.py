@@ -357,7 +357,8 @@ def make_tight_mask(contour, xmin, ymin, width, height):
 
 def get_contours(mask, TEXT_MIN_WIDTH, TEXT_MIN_HEIGHT, TEXT_MIN_ASPECT, TEXT_MAX_THICKNESS, **kwargs):
     ''' binary mask [h,w] -> contours '''
-    _, contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+#     _, contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE) # OLD OPENCV VERSION
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     contours_out = []
 
     for contour in contours:

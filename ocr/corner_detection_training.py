@@ -98,7 +98,8 @@ def detect_object(img, image_height=100, canny_threshold=0):
 
     # Contour extraction
     # Since opencv 3.2 source image is not modified by this function (and the API changed...)
-    _image, contours, _hierarchy = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+#     _image, contours, _hierarchy = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _hierarchy = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
     # Select the best contour
     if len(contours) > 0:

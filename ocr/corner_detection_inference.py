@@ -3,8 +3,6 @@
 __all__ = ['PaperCornerPredictor', 'show_points_on_mask']
 
 # Cell
-from .corner_detection_training import *
-from .corner_detection_training import input_shape
 from .core import load_inference
 from fastai import *
 from fastai.vision import *
@@ -14,6 +12,9 @@ import cv2
 import matplotlib.pyplot as plt
 
 # Cell
+from .corner_detection_training import *
+from .corner_detection_training import input_shape
+
 class PaperCornerPredictor:
     def __init__(self, model_name='unet_paper_mask', use_unet=False, use_gpu=True, trained_input_shape=input_shape):
         '''
