@@ -18,9 +18,9 @@ from tqdm.notebook import tqdm
 class sroie_ocr_config:
     LINE_HEIGHT = 48
     MAIN_DIR = '../data/sroie2019/'
-    LINES_DIR = '../data/ocr/'
+    LINES_DIR = '../data/ocr/sroie2019_lines/'
     FILE_PATH = '../data/ocr/sroie2019_gt.pickle'
-    PAD = 8 # only for training
+    PAD = 2 # only for training
     TEST_PAD = 1 # optional, can be set to zero
 
 # Cell
@@ -41,7 +41,7 @@ def read_data(csv_path='images/X00016469670.txt'):
 def preprocess_label(label):
     return label.upper()
 
-lines_subdir = os.path.join(sroie_ocr_config.LINES_DIR, 'lines')
+lines_subdir = os.path.join(sroie_ocr_config.LINES_DIR, '..')
 if not os.path.exists(lines_subdir): os.mkdir(lines_subdir)
 
 printstats = lambda arr, s: print(s, '| mean:', arr.mean(), 'min:', arr.min(), 'max:', arr.max())
@@ -81,7 +81,7 @@ def create_lines(PAD=sroie_ocr_config.PAD, TEST_PAD=sroie_ocr_config.TEST_PAD):
 
                 line_fn = fn[:-3] + str(i) + '.jpg'
                 gt_dict[line_fn] = (preprocess_label(label), mode, 'sroie2019')
-                cv2.imwrite(os.path.join(sroie_ocr_config.LINES_DIR, 'lines', line_fn), im_line)
+                cv2.imwrite(os.path.join(sroie_ocr_config.LINES_DIR, line_fn), im_line)
                 total += 1
     save_dict(gt_dict, sroie_ocr_config.FILE_PATH)
     printstats(np.array(hs), 'height')
@@ -170,7 +170,7 @@ def create_dewarped_lines(PAD=sroie_ocr_config.PAD, TEST_PAD=sroie_ocr_config.TE
 
                 line_fn = fn[:-3] + str(i) + '.jpg'
                 gt_dict[line_fn] = (preprocess_label(label), mode, 'sroie2019')
-                cv2.imwrite(os.path.join(sroie_ocr_config.LINES_DIR, 'lines', line_fn), im_line)
+                cv2.imwrite(os.path.join(sroie_ocr_config.LINES_DIR, line_fn), im_line)
                 total += 1
     save_dict(gt_dict, sroie_ocr_config.FILE_PATH)
     printstats(np.array(hs), 'height')
@@ -180,16 +180,17 @@ def create_dewarped_lines(PAD=sroie_ocr_config.PAD, TEST_PAD=sroie_ocr_config.TE
 # Cell
 # NOTE: fn2label[fn] returns tuple (str(label), str(mode)), where mode = 'train'/'test'
 def get_fn2label():
-     return read_dict(os.path.join(sroie_ocr_config.LINES_DIR, 'sroie2019_gt.pickle'))
+     return read_dict(os.path.join(sroie_ocr_config.LINES_DIR, '..', 'sroie2019_gt.pickle'))
 
 # Cell
-DATA_PATH = os.path.join(sroie_ocr_config.LINES_DIR, 'lines')
+DATA_PATH = os.path.join(sroie_ocr_config.LINES_DIR)
 
 # Cell
 def create_df(fn2label=None):
     if fn2label is None: fn2label = get_fn2label()
     data = []
     for fn, (label, data_split, dataset_desc) in fn2label.items():
+        fn = os.path.join(sroie_ocr_config.LINES_DIR, fn)
         data.append((fn, label, data_split == 'test', dataset_desc))
     return pd.DataFrame(data, columns=['image_path', 'string', 'valid', 'dataset'])
 

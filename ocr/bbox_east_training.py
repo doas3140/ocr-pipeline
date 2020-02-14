@@ -5,7 +5,8 @@ __all__ = ['east_config', 'ObjectCategoryProcessor', 'ObjectCategoryList', 'Obje
            'tlbr2cthw', 'IoU', 'tlbr2hw', 'hw2area', 'match_anchors', 'create_grid', 'anchors', 'cthw2tlbr',
            'show_anchors_on_images', 'tlbr2cthw', 'bbox_to_target', 'bbox_to_target', 'tlbr2cc', 'prepare_bboxes',
            'prepare_labels', 'BBLossMetrics', 'target_to_bbox', 'nms', 'check_overlap', 'calc_precision_recall', 'F1',
-           'iou_loss', 'dice_loss', 'encode_class', 'SigmaL1SmoothLoss', 'RetinaNetFocalLoss', 'MSEloss', 'MSE', 'mse']
+           'iou_loss', 'dice_loss', 'encode_class', 'SigmaL1SmoothLoss', 'RetinaNetFocalLoss', 'threshold_images',
+           'prepare_masked_bboxes', 'PreciseFocalLoss', 'MSEloss', 'MSE', 'mse']
 
 # Cell
 from fastai import *
@@ -95,7 +96,8 @@ def bb_pad_collate(samples:BatchSamples, pad_idx:int=0) -> Tuple[FloatTensor, Tu
         if bbs.nelement() != 0:
             bboxes[i,-len(bbs):] = bbs
             labels[i,-len(lbls):] = tensor(lbls)
-    return torch.cat(imgs,0), (bboxes,labels)
+    images = torch.cat(imgs,0)
+    return images, (bboxes,labels,images)
 
 # Cell
 def _gaussian_blur(x, size:uniform_int):
@@ -429,14 +431,15 @@ def bbox_to_target(bboxes, anchors):
     return torch.cat([a_centers - bboxes[...,:2], bboxes[...,2:] - a_centers], -1) # .div_(bboxes.new_tensor([[0.1, 0.1, 0.1, 0.1]]))
 
 # Cell
-def prepare_bboxes(anchors, bbox_true, bbox_pred):
+def prepare_bboxes(anchors, bbox_true, bbox_pred, matches=None):
     ''' Return the target of the model on `anchors` for the `bboxes`
     @param: [N1,4] :tlbr coordinates (all anchors), N1 = H x W
     @param: [N2,4] :tlbr coordinates (true bboxes)
     @param: [N1,4] :tlbr coordinates (nn output bboxes)
+    @param: [N3,4] :optional for caching
     @return ([N3,4], [N3,4], [N3,4]) or None :bbox_true, bbox_pred, matches (for caching)
     '''
-    matches = match_anchors(anchors, bbox_true) # [N3, 4]
+    if matches is None: matches = match_anchors(anchors, bbox_true) # [N3, 4]
     non_bg = matches >= 0 # [N3, 4] (non background)
 
     if non_bg.sum() == 0:
@@ -540,7 +543,7 @@ def calc_precision_recall(bbox_pred, bbox_true, iou_thresh=0.5):
     # print(precision, recall, correct, num_preds)
     return precision, recall
 
-def F1(last_output, bbox_true_b, y_true_b, detect_thresh=0.8, iou_thresh=0.5, **kwargs):
+def F1(last_output, bbox_true_b, y_true_b, images, detect_thresh=0.8, iou_thresh=0.5, **kwargs):
     y_pred_b, bbox_pred_b = last_output
     if len(y_true_b) == 0: return tensor(0.)
 
@@ -647,13 +650,14 @@ class RetinaNetFocalLoss(nn.Module):
         self.metrics += tensor([bb_loss, y_loss])
         return (1-self.class_weight) * bb_loss + self.class_weight * y_loss
 
-    def forward(self, nn_output, bbox_true, y_true):
+    def forward(self, nn_output, bbox_true, y_true, images):
         y_pred, bbox_pred = nn_output
         '''
         @param: [B, 1, H/4, W/4] :probability for each h,w cell
         @param: [B, 4, H/4, W/4] :bboxes for each h,w cell
         @param: [B, N_max, 4]    :true bboxes
         @param: [B, N_max]       :true label (1/0)
+        @param: [B, H, W]
         '''
         if bbox_true.device != self.anchors.device:
             self.anchors = self.anchors.to(y_pred.device)
@@ -666,6 +670,59 @@ class RetinaNetFocalLoss(nn.Module):
         bs = y_true.size(0)
         self.metrics = dict(zip(self.metric_names, [m/bs for m in self.metrics]))
         return loss/bs
+
+# Cell
+def threshold_images(imgs): # torch tensor [b,3,h,w] -> torch tensor [b,1,h,w] w/ 0 or 1
+    # denormalize to 0-255
+    imgs = (imgs - imgs.min())
+    imgs = (imgs / imgs.max()) * 255.
+    assert imgs.min() >= 0 and imgs.max() <= 255
+    # threshold
+    out_imgs = []
+    for im in imgs:
+        im = image2np(im).astype(np.uint8) # [h,w,3]
+        im = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+        _,th = cv2.threshold(im,0,1,cv2.THRESH_BINARY_INV+cv2.THRESH_OTSU)
+        out_imgs.append( tensor(th)[None] )
+    return torch.cat(out_imgs, 0)
+
+def prepare_masked_bboxes(anchors, bbox_true, bbox_pred, mask):
+    matches = match_anchors(anchors, bbox_true) # [N3, 4]
+    assert (tensor(matches.shape) == tensor(mask.shape)).all() == True
+    matches[mask] = -1
+    return prepare_bboxes(anchors, bbox_true, bbox_pred, matches)
+
+class PreciseFocalLoss(RetinaNetFocalLoss):
+    def forward(self, nn_output, bbox_true, y_true, images):
+        y_pred, bbox_pred = nn_output
+
+        # CHANGED
+        b,c,h,w = y_pred.shape
+        images = F.interpolate(images, size=(h,w), mode='bilinear', align_corners=True)
+        text_mask = threshold_images(images).bool().to(device=y_pred.device)
+
+        if bbox_true.device != self.anchors.device:
+            self.anchors = self.anchors.to(y_pred.device)
+
+        loss = torch.tensor(0, dtype=torch.float32).to(y_pred.device)
+        self.metrics = tensor([0., 0.])
+        for yp, bp, yt, bt, m in zip(y_pred, bbox_pred, y_true, bbox_true, text_mask): # CHANGED
+            loss += self._one_loss(yp.view(-1,1), bp.permute(1,2,0).view(-1,4), yt, bt, m.view(-1)) # CHANGED
+
+        bs = y_true.size(0)
+        self.metrics = dict(zip(self.metric_names, [m/bs for m in self.metrics]))
+        return loss/bs
+
+    def _one_loss(self, y_pred, bbox_pred, y_true, bbox_true, mask):
+        ''' [N,C], [N,4], [N_max], [N_max,4], [N_max] -> float, float '''
+        bbox_true, y_true = self._unpad(bbox_true, y_true) # [N1,4], [N1]
+        bbox_true, bbox_pred, matches = prepare_masked_bboxes(self.anchors, bbox_true, bbox_pred, mask) # [N2,4], [N2,4]
+        if matches is None or matches is None: return tensor(0.)
+        y_true, y_pred = prepare_labels(y_true, y_pred, matches) # CHANGED
+        bb_loss = self._reg_loss(bbox_pred, bbox_true, y_pred[matches[matches >= 0]])
+        y_loss = self._cls_loss(y_pred, y_true, matches)
+        self.metrics += tensor([bb_loss, y_loss])
+        return (1-self.class_weight) * bb_loss + self.class_weight * y_loss
 
 # Cell
 class MSEloss(RetinaNetFocalLoss):

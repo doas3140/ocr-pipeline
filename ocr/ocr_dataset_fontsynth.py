@@ -6,6 +6,7 @@ __all__ = ['fontsynth_config', 'allowed_chars', 'get_fn2label', 'create_df', 'ch
 from .core import *
 from pathlib import PosixPath
 import pandas as pd
+import os
 
 allowed_chars = [
 
@@ -39,7 +40,7 @@ class fontsynth_config:
     FILE_PATH = '../data/ocr/fontsynth_gt.pickle'
     LINE_HEIGHT = 48
     NUM_EXAMPLES = 50000
-    VALID_PCT = .3
+    VALID_PCT = .2
 
 len(allowed_chars)
 
@@ -52,6 +53,7 @@ def create_df(fn2label=None):
     if fn2label is None: fn2label = get_fn2label()
     data = []
     for fn, (label, data_split, dataset_desc) in fn2label.items():
+        fn = os.path.join(fontsynth_config.LINES_DIR, fn)
         data.append((fn, label, data_split == 'test', dataset_desc))
     return pd.DataFrame(data, columns=['image_path', 'string', 'valid', 'dataset'])
 
